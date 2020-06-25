@@ -1,0 +1,30 @@
+<!--logs.wxml-->
+<view class="page">
+  <view class="page__hd">
+    <view class="section__ctn">
+      <text style="width:100px; height:100px;font-size:25px">欢迎使用简易开门装置</text> 
+    </view>
+  </view>
+  <view class="page__bd">
+    <view class="section">
+      <input value = '{{name}}' type="text" bindinput='inputDevice' placeholder="设备序列号" auto-focus/>
+    </view>
+    <view class="section">
+      <input value = '{{name}}' type="text" bindinput='inputPassword' placeholder="密码" />
+    </view>
+        <view class="section">
+      <input value = '{{name}}' type="text" bindinput='inputName' placeholder="别名" />
+    </view>
+    <view class="section">
+      <view class="btn-area">
+        <button type="primary" bindtap='bind' formType='reset'>绑定</button>
+      </view>
+    </view>
+    <view class="section">
+      <view class="btn-area">
+        <button type="default" bindtap="forgetpassword">忘记密码</button>
+      </view>
+    </view>
+
+  </view>
+</view>

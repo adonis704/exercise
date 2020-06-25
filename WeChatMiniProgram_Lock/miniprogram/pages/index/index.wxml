@@ -1,0 +1,20 @@
+<!--index.wxml-->
+<view class="container">
+  <view class="page__hd">
+    <view class="section__ctn">
+      <text style="width:100px; height:100px;font-size:25px">{{deviceName}}</text> 
+    </view>
+  </view>
+  <view class='page_bd'>
+    <view class="section">
+      <view class="btn-area">
+        <button type="primary" bindtap='openLock'>打开</button>
+      </view>
+    </view>
+    <view class="section">
+      <view class="btn-area">
+        <button type="default" bindtap="modifyPassword">修改密码</button>
+      </view>
+    </view>
+  </view>
+</view>
