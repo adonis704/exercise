@@ -1,3 +1,7 @@
+/*
+ * 内核驱动程序
+ */
+
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/fs.h>
@@ -9,14 +13,19 @@
 
 #include "mydriver.h"
 
-int share_major = SHARE_MAJOR;  //主设备号
-int share_minor = 0;    //次设备号
-module_param(share_major, int, S_IRUGO);
-module_param(share_minor, int, S_IRUGO);
+int shared_major = SHARED_MAJOR;    //主设备号
+int shared_minor = 0;   //第一个次设备号
+int shared_devices_num = DEVICES_NUM;   //需要初始化的设备数
+struct shared_dev *shared_device;   //只想第一个结构的指针
 
-struct share_dev *share_device; //设备的数据结构
+module_param(shared_major, int, S_IRUGO);
+module_param(shared_minor, int, S_IRUGO);
 
-int share_cleanmem(struct share_dev *dev){
+/*
+ * 释放占用的内存
+ * dev：需要释放的设备
+ */
+int shared_trim(struct shared_dev *dev){
     if (dev){
         if (dev->data){
             kfree(dev->data);
@@ -28,196 +37,232 @@ int share_cleanmem(struct share_dev *dev){
     return 0;
 }
 
-//open函数，设置inode和file结构中的相关内容，成功返回0
-int share_open(struct inode *inode, struct file *filp)
-{
-    struct share_dev *dev;
+/*
+ * 打开文件
+ * inode：inode节点
+ * filp：file指针
+ */
+int shared_open(struct inode *inode, struct file *filp){
+    struct shared_dev *dev;
 
-    dev = container_of(inode->i_cdev, struct share_dev, cdev);  //获取包含cdev结构的share_dev结构
-    filp->private_data = dev;   //将share_dev结构嵌入到file结构中
+    dev = container_of(inode->i_cdev, struct shared_dev, cdev); //获取包含cdev结构的shared_dev结构
+    filp->private_data = dev;
 
-    //如果文件不可读，则撤销
-    if ((filp->f_flags & O_ACCMODE) == O_WRONLY){
-        //申请进入临界区
-        if (down_interruptible(&dev->sem)){
+    if ((filp->f_flags & O_ACCMODE) == O_WRONLY){   //如果不可打开
+        if (down_interruptible(&dev->sem)){ //进入临界区
             return -ERESTARTSYS;
         }
-
-        share_cleanmem(dev)
+        shared_trim(dev);
         up(&dev->sem);
     }
 
     return 0;
 }
 
-ssize_t share_read(struct file *filp, char __user *buf, size_t count, loff_t *f_pos){
-    struct share_dev *dev = filp->private_data;
-    ssize_t rst = 0;    //成功读取的字节数
-
-    if (down_interruptible(&dev->sem)){ //申请进入临界区
-        pr_info("waiting...\n");
-        return -ERESTARTSYS;
-    }
-
-    if (*f_pos >= dev->size){   //到达文件尾
-        goto out;
-    }
-
-    if (*f_pos + count > dev->size){    //过长则截断
-        count = dev->size - *f_pos;
-    }
-
-
-    if (!dev->data){    //无数据可读
-        pr_info("no data!\n");
-        goto out;
-    }
-
-
-    if (copy_to_user(buf, dev->data + *f_pos, (unsigned long)count)){   //数据拷贝到用户空间失败
-        pr_info("can't copy data to user\n");
-        retval = -EFAULT;
-        goto out;
-    }
-
-
-    //更新文件信息
-    *f_pos += count;
-    rst = count;
-
-    out:
-    up(&dev->sem);
-    return rst;
-}
-
-
-ssize_t share_write(struct file *filp, const char __user *buf, size_t count, loff_t *f_pos){
-    struct share_dev *dev = filp->private_data;
-    share_trim(dev);    //先清空原有的数据
-    ssize_t rst = -ENOMEM;  //成功写入的字节数
-
-    if (down_interruptible(&dev->sem)){ //申请进入临界区
-        pr_info("waiting...\n");
-        return -ERESTARTSYS;
-    }
-
-
-    if (!dev->data){    //数据未分配内存
-        dev->data = kmalloc(SHARE_BUFFER_SIZE, GFP_KERNEL);
-
-        if (!dev->data){    //无法分配内存
-            pr_info("can't alloc enough memory.\n");
-            goto out;
-        }
-
-        //初始化内存
-        memset(dev->data, 0, SHARE_BUFFER_SIZE);
-    }
-
-
-    if (count > SHARE_BUFFER_SIZE - dev->size){ //过长则截断
-        count = SHARE_BUFFER_SIZE - dev->size;
-    }
-
-
-    if (copy_from_user(dev->data + dev->size, buf, count)){ //无法从用户空间拷贝数据
-        pr_info("fail to copy from user.\n");
-        rst = -EFAULT;
-        goto out;
-    }
-
-
-    dev->size += count;
-    rst = count;
-
-    out:
-    up(&dev->sem);
-    return rst;
-}
-
-//项目暂时用不上此函数
-int share_release(struct inode *inode, struct file *filp)
-{
-    return 0;
-}
-//项目暂时用不上这个函数
-loff_t share_llseek(struct file *filp, loff_t off, int whence){
+/*
+ * 释放文件，暂时用不上，只用于占位
+ */
+int shared_release(struct inode *inode, struct file *filp){
     return 0;
 }
 
-struct file_operations share_fops = {
+
+/*
+ * 读函数，返回成功读取的字节数
+ * filp：file指针
+ * buf：用户空间的缓冲区
+ * count：数量
+ * f_pos：偏移量
+ */
+ssize_t shared_read(struct file *filp, char __user *buf, size_t count, loff_t *f_pos){
+struct shared_dev *dev = filp->private_data;
+ssize_t retval = 0;
+
+if (down_interruptible(&dev->sem)){ //进入临界区
+return -ERESTARTSYS;
+}
+if (*f_pos >= dev->size){   //到达文件尾
+goto out;
+}
+if (*f_pos + count > dev->size){    //截断
+count = dev->size - *f_pos;
+}
+if (!dev->data){    //无可读数据
+goto out;
+}
+if (copy_to_user(buf, dev->data + *f_pos, (unsigned long)count)){   //将数据复制到用户空间，如果失败则
+retval = -EFAULT;
+goto out;
+}
+
+//更新节点信息
+*f_pos += count;
+retval = count;
+
+out:
+up(&dev->sem);  //释放信号量
+return retval;
+}
+
+/*
+ * 写函数，返回成功写入的字节数
+ * filp：file指针
+ * buf：用户空间的缓冲区
+ * count：数量
+ * f_pos：偏移量
+ */
+ssize_t shared_write(struct file *filp, const char __user *buf, size_t count, loff_t *f_pos){
+struct shared_dev *dev = filp->private_data;
+ssize_t retval = -ENOMEM;
+
+if (down_interruptible(&dev->sem)){ //进入临界区
+return -ERESTARTSYS;
+}
+shared_trim(dev);   //先释放原来的内容
+
+if (!dev->data){    //初始化数据
+dev->data = kmalloc(SHARED_BUFFER_SIZE, GFP_KERNEL);
+if (!dev->data){
+goto out;
+}
+
+memset(dev->data, 0, SHARED_BUFFER_SIZE);   //初始化为0
+}
+
+if (count > SHARED_BUFFER_SIZE - dev->size){    //截断
+    count = SHARED_BUFFER_SIZE - dev->size;
+}
+
+if (copy_from_user(dev->data + dev->size, buf, count)){ //从用户空间复制数据
+retval = -EFAULT;
+goto out;
+}
+
+//更新信息
+dev->size += count;
+retval = count;
+
+out:
+up(&dev->sem);  //释放信号量
+return retval;
+}
+
+/*
+ * 改变偏移量
+ */
+loff_t shared_llseek(struct file *filp, loff_t off, int whence){
+    struct shared_dev *dev = filp->private_data;
+    loff_t newpos;
+
+    switch(whence){ //根据不同模式更新偏移量
+        case 0:
+            newpos = off;
+            break;
+        case 1:
+            newpos = filp->f_pos + off;
+            break;
+        case 2:
+            newpos = dev->size + off;
+            break;
+        default:
+            return -EINVAL;
+    }
+
+    if (newpos < 0){
+        return -EINVAL;
+    }
+
+    filp->f_pos = newpos;
+    return newpos;
+}
+
+struct file_operations shared_fops = {  //文件操作结构
         .owner = THIS_MODULE,
-        .llseek = share_llseek,
-        .read = share_read,
-        .write = share_write,
-        .open = share_open,
-        .release = share_release,
+        .llseek = shared_llseek,
+        .read = shared_read,
+        .write = shared_write,
+        .open = shared_open,
+        .release = shared_release,
 };
 
-void __exit share_exit(void){
-    dev_t devno = MKDEV(share_major, share_minor);
+/*
+ * 退出函数
+ */
+void shared_cleanup_module(void){
+    int i;
+    for(i = 0; i < shared_devices_num; i++){
+        dev_t devno = MKDEV(shared_major, shared_minor + i);    //cdev设备号
 
-    if (share_device){  //清空设备占用的内存
-        share_cleanmem(share_device);
-        cdev_del(&share_device->cdev);
-        kfree(share_device);
+        if (shared_device){
+            shared_trim(shared_device); //释放内存
+            cdev_del(&shared_device->cdev); //删除cdev设备
+        }
+        unregister_chrdev_region(devno, 1); //注销一个cdev设备
     }
-
-    unregister_chrdev_region(devno, 1);
+    kfree(shared_device);   //释放指针占用的内存
 }
 
-//初始化cdev设备
-static void share_init_cdev(struct share_dev *dev)
-{
-    int devno = MKDEV(share_major, share_minor);
+/*
+ * 初始化单个cdev
+ */
+static void shared_setup_cdev(struct shared_dev *dev, int index){
     int err;
+    int devno = MKDEV(shared_major, shared_minor + index);
 
-    cdev_init(&dev->cdev, &share_fops);
+    cdev_init(&dev->cdev, &shared_fops);
     dev->cdev.owner = THIS_MODULE;
-    dev->cdev.ops = &share_fops;
+    dev->cdev.ops = &shared_fops;
     err = cdev_add(&dev->cdev, devno, 1);
-    if(err){
-        pr_info("can't add char device %d %d\n", share_major, share_minor);
+
+    if (err){
+        pr_info("Error %d adding shared", err);
     }
 
 }
 
-static int __init share_init(void)
-{
-    int rst;
+/*
+ * 初始化函数
+ */
+static int __init shared_init_module(void){
+    int result;
+    int i;
     dev_t dev = 0;
 
-    if (share_major){   //静态注册
-        dev = MKDEV(share_major, share_minor);
-        rst = register_chrdev_region(dev, 1, "share");
-    }   else{   //动态注册
-        rst = alloc_chrdev_region(&dev, share_minor, 1, "share");
-        share_major = MAJOR(dev);   //更新主设备号
+    if (shared_major){  //静态分配
+        dev = MKDEV(shared_major, shared_minor);
+        result = register_chrdev_region(dev, 1, "shared");
+    } else{ //动态分配
+        result = alloc_chrdev_region(&dev, shared_minor, 1, "shared");
+        shared_major = MAJOR(dev);
     }
 
-    if (rst < 0){   //注册失败
-        pr_info("can't register char device %d %d\n", share_major, share_minor);
-        return rst;
+    if (result < 0){
+        pr_info("shared: can't get major %d\n", shared_major);
+        return result;
     }
 
-    share_device = kmalloc(sizeof(struct share_dev), GFP_KERNEL);   //给数据结构分配空间
-    if (!share_device){ //无法分配空间
-        rst = -ENOMEM;
+    //分配设备内存并初始化为0
+    shared_device = kmalloc(shared_devices_num * sizeof(struct shared_dev), GFP_KERNEL);
+    if (!shared_device){
+        result = -ENOMEM;
         goto fail;
+    }
+    memset(shared_device, 0, shared_devices_num * sizeof(struct shared_dev));
 
-    memset(share_device, 0, sizeof(struct share_dev));  //初始化数据结构
-    sema_init(&share_device->sem, 1);   //初始化互斥信号量
-    share_init_cdev(share_device);  //初始化字符设备
-
-    pr_info("register device %d %d\n", share_major, share_minor);
+    for(i = 0; i < shared_devices_num; i++){    //初始化shared_devices_num个cdev
+        sema_init(&shared_device[i].sem, 1);
+        shared_setup_cdev(&shared_device[i], i);
+        pr_info("created %d %d\n", shared_major, shared_minor + i);
+    }
     return 0;
 
     fail:
-    share_exit();
-    return rst;
+    shared_cleanup_module();
+    return result;
 }
 
-module_init(share_init);
-module_exit(share_exit);
+
+module_init(shared_init_module);
+module_exit(shared_cleanup_module);
 
 MODULE_LICENSE("GPL");
